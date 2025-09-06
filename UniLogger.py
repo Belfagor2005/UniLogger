@@ -277,7 +277,7 @@ if __name__ == "__main__":
 1. **Import the module**
 
 ```python
-from your_logger_module import get_logger
+from .UniLogger import get_logger
 ```
 
 2. **Create a logger instance**
