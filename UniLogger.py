@@ -5,11 +5,11 @@ from __future__ import absolute_import, print_function
 #########################################################
 #                                                       #
 #  Universal Logger Module                              #
-#  Version: 1.0                                         #
+#  Version: 1.1                                         #
 #  Created by Lululla (https://github.com/Belfagor2005) #
 #  License: CC BY-NC-SA 4.0                             #
 #  https://creativecommons.org/licenses/by-nc-sa/4.0    #
-#  Last Modified: 2025-05-27                            #
+#  Last Modified: 2025-10-30                           #
 #                                                       #
 #  Credits:                                             #
 #  - Original concept by Lululla                        #
@@ -19,25 +19,34 @@ from __future__ import absolute_import, print_function
 #  please maintain this credit header.                  #
 #########################################################
 """
-
-from os import makedirs, remove
-from os.path import join, exists
+import sys
 from threading import Lock
+from os import makedirs, remove, rename
+from os.path import join, exists, getsize
 from time import strftime
+from io import StringIO
+
+logfile = StringIO()
+mutex = Lock()
+
+_logger_instance = None
 
 
 class ColoredLogger:
     LEVELS = {
-        "DEBUG": ("\033[92m", "[DEBUG]"),           # green
-        "INFO": ("\033[97m", "[INFO] "),            # white
-        "WARNING": ("\033[93m", "[WARN] "),         # yellow
-        "ERROR": ("\033[91m", "[ERROR]"),           # red
-        "CRITICAL": ("\033[95m", "[CRITICAL]"),     # magenta
+        "DEBUG": ("\033[92m", "🐛 [DEBUG]"),        # green + bug icon
+        "INFO": ("\033[97m", "ℹ️  [INFO] "),        # white + info icon
+        "WARNING": ("\033[93m", "⚠️  [WARN] "),     # yellow + warning icon
+        "ERROR": ("\033[91m", "❌ [ERROR]"),        # red + error icon
+        "CRITICAL": ("\033[95m", "💀 [CRITICAL]"),  # magenta + skull icon
     }
     END = "\033[0m"
     _instances = {}
     _lock = Lock()
 
+    SUPPORTS_COLOR = hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
+    encoding = getattr(sys.stdout, 'encoding', None) or ''
+    SUPPORTS_UNICODE = encoding.lower().startswith('utf')
     def __new__(cls, log_path=None, plugin_name="generic", clear_on_start=True, max_size_mb=1):
         """Singleton for log_path + plugin_name combination"""
         instance_key = f"{log_path}_{plugin_name}"
@@ -79,27 +88,58 @@ class ColoredLogger:
 
         self._initialized = True
 
+    def _get_level_display(self, level):
+        """Get the appropriate display format for the level"""
+        color, label = self.LEVELS.get(level.upper(), ("", "[LOG] "))
+
+        # Se non supporta Unicode, usa versioni testuali
+        if not self.SUPPORTS_UNICODE:
+            text_labels = {
+                "DEBUG": ("\033[92m", "[DEBUG]"),
+                "INFO": ("\033[97m", "[INFO] "),
+                "WARNING": ("\033[93m", "[WARN] "),
+                "ERROR": ("\033[91m", "[ERROR]"),
+                "CRITICAL": ("\033[95m", "[CRITICAL]"),
+            }
+            color, label = text_labels.get(level.upper(), ("", "[LOG] "))
+
+        return color, label
     def log(self, level, message):
         """Base logging method"""
         if not hasattr(self, '_initialized'):
             return
 
-        color, label = self.LEVELS.get(level.upper(), ("", "[LOG] "))
+        color, label = self._get_level_display(level)
         timestamp = strftime("%Y-%m-%d %H:%M:%S")
-        formatted_message = f"{timestamp} {self.plugin_name} {label} {message}"
 
-        # Output colored console
-        print(f"{timestamp} {self.plugin_name} {label} {color}{message}{self.END}")
+        console_message = f"{timestamp} {self.plugin_name} {label} {message}"
 
-        # Scrittura su file
+        # Per file log (senza colori e con emoticon sostituite se necessario)
+        file_label = label
+        if not self.SUPPORTS_UNICODE:
+            # Sostituisci emoticon con testo
+            file_label = file_label.replace("🐛", "[DEBUG]")
+            file_label = file_label.replace("ℹ️", "[INFO]")
+            file_label = file_label.replace("⚠️", "[WARN]")
+            file_label = file_label.replace("❌", "[ERROR]")
+            file_label = file_label.replace("💀", "[CRITICAL]")
+
+        file_message = f"{timestamp} {self.plugin_name} {file_label} {message}"
+
+        # Output a console
+        if self.SUPPORTS_COLOR and color:
+            print(f"{timestamp} {self.plugin_name} {label} {color}{message}{self.END}")
+        else:
+            print(console_message)
+        # Output a file
         if self.log_file:
-            self._write_to_file(formatted_message)
+            self._write_to_file(file_message)
             self._check_rotation()
 
     def _write_to_file(self, message):
         """Secure file writing with timeout"""
         try:
-            with open(self.log_file, "a") as f:
+            with open(self.log_file, "a", encoding='utf-8') as f:
                 f.write(message + "\n")
                 f.flush()
         except Exception as e:
@@ -120,7 +160,6 @@ class ColoredLogger:
     def _get_file_size_mb(self):
         """Returns the file size in MB"""
         try:
-            from os.path import getsize
             return getsize(self.log_file) / (1024 * 1024)
         except:
             return 0
@@ -128,9 +167,6 @@ class ColoredLogger:
     def _rotate_logs(self):
         """Perform log rotation"""
         try:
-            import glob
-            import os
-
             base_name = self.log_file
             pattern = f"{base_name}.*"
 
@@ -140,7 +176,7 @@ class ColoredLogger:
             # Delete the oldest backups (keep only the last 5)
             for old_backup in backups[4:]:
                 try:
-                    os.remove(old_backup)
+                    remove(old_backup)
                 except:
                     pass
 
@@ -151,7 +187,7 @@ class ColoredLogger:
 
                 if exists(old_name):
                     try:
-                        os.rename(old_name, new_name)
+                        rename(old_name, new_name)
                     except:
                         pass
 
@@ -159,19 +195,44 @@ class ColoredLogger:
             print(f"[LOG ERROR] Log rotation failed: {e}")
 
     def debug(self, message, *args):
-        self.log("DEBUG", message % args if args else message)
+        """Log debug message"""
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message  # fallback se è già una f-string
+        self.log("DEBUG", msg)
 
     def info(self, message, *args):
-        self.log("INFO", message % args if args else message)
+        """Log info message"""
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message
+        self.log("INFO", msg)
 
     def warning(self, message, *args):
-        self.log("WARNING", message % args if args else message)
+        """Log warning message"""
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message
+        self.log("WARNING", msg)
 
     def error(self, message, *args):
-        self.log("ERROR", message % args if args else message)
+        """Log error message"""
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message
+        self.log("ERROR", msg)
 
     def critical(self, message, *args):
-        self.log("CRITICAL", message % args if args else message)
+        """Log critical message"""
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message
+        self.log("CRITICAL", msg)
 
     def exception(self, message, *args):
         """Log an exception with traceback"""
@@ -179,7 +240,11 @@ class ColoredLogger:
         import traceback
         exc_info = sys.exc_info()
         traceback_text = ''.join(traceback.format_exception(*exc_info))
-        full_message = f"{message % args if args else message}\n{traceback_text}"
+        try:
+            msg = message % args if args else message
+        except (TypeError, ValueError):
+            msg = message
+        full_message = f"{msg}\n{traceback_text}"
         self.log("ERROR", full_message)
 
     def show_message(self, session, text, timeout=5):
@@ -218,6 +283,32 @@ def get_logger(log_path=None, plugin_name="generic", clear_on_start=True, max_si
         clear_on_start=clear_on_start,
         max_size_mb=max_size_mb
     )
+
+
+# Test function
+def test_logger():
+    """Test the logger functionality"""
+    logger = get_logger(
+        log_path="/tmp/test_logs",
+        plugin_name="TestLogger",
+        clear_on_start=True,
+        max_size_mb=1
+    )
+
+    logger.debug("Debug message with bug icon 🐛")
+    logger.info("Info message with info icon ℹ️")
+    logger.warning("Warning message with warning icon ⚠️")
+    logger.error("Error message with error icon ❌")
+    logger.critical("Critical message with skull icon 💀")
+
+    try:
+        raise ValueError("This is a test exception")
+    except Exception as e:
+        logger.exception("Exception caught: %s", e)
+
+
+if __name__ == "__main__":
+    test_logger()
 
 
 """
