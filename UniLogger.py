@@ -25,6 +25,7 @@ from os import makedirs, remove, rename
 from os.path import join, exists, getsize
 from time import strftime
 from io import StringIO
+import glob
 
 logfile = StringIO()
 mutex = Lock()
